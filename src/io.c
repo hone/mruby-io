@@ -11,6 +11,10 @@
 #include "mruby/variable.h"
 #include "mruby/ext/io.h"
 
+#ifndef MRUBY_PROCESS_H
+#include "mruby/ext/process.h"
+#endif
+
 #if MRUBY_RELEASE_NO < 10000
 #include "error.h"
 #else
@@ -42,7 +46,7 @@
 
 static int mrb_io_modestr_to_flags(mrb_state *mrb, const char *modestr);
 static int mrb_io_flags_to_modenum(mrb_state *mrb, int flags);
-static void fptr_finalize(mrb_state *mrb, struct mrb_io *fptr, int noraise);
+static int fptr_finalize(mrb_state *mrb, struct mrb_io *fptr, int noraise);
 
 #if MRUBY_RELEASE_NO < 10000
 static struct RClass *
@@ -388,13 +392,14 @@ mrb_io_initialize(mrb_state *mrb, mrb_value io)
   return io;
 }
 
-static void
+static int
 fptr_finalize(mrb_state *mrb, struct mrb_io *fptr, int noraise)
 {
   int n = 0;
+  int status = 0;
 
   if (fptr == NULL) {
-    return;
+    return status;
   }
 
   if (fptr->fd > 2) {
@@ -414,7 +419,7 @@ fptr_finalize(mrb_state *mrb, struct mrb_io *fptr, int noraise)
   if (fptr->pid != 0) {
     pid_t pid;
     do {
-      pid = waitpid(fptr->pid, NULL, 0);
+      pid = waitpid(fptr->pid, &status, 0);
     } while (pid == -1 && errno == EINTR);
   }
 #endif
@@ -422,6 +427,8 @@ fptr_finalize(mrb_state *mrb, struct mrb_io *fptr, int noraise)
   if (!noraise && n != 0) {
     mrb_sys_fail(mrb, "fptr_finalize failed.");
   }
+
+  return status;
 }
 
 mrb_value
@@ -604,11 +611,17 @@ mrb_value
 mrb_io_close(mrb_state *mrb, mrb_value io)
 {
   struct mrb_io *fptr;
+  int pid, status;
   fptr = (struct mrb_io *)mrb_get_datatype(mrb, io, &mrb_io_type);
   if (fptr && fptr->fd < 0) {
     mrb_raise(mrb, E_IO_ERROR, "closed stream.");
   }
-  fptr_finalize(mrb, fptr, FALSE);
+  pid = fptr->pid;
+  status = fptr_finalize(mrb, fptr, FALSE);
+  if (WIFEXITED(status)) {
+    mrb_gv_set(mrb, mrb_intern_lit(mrb, "$?"), mrb_procstat_new(mrb, pid, status));
+  }
+
   return mrb_nil_value();
 }
 
